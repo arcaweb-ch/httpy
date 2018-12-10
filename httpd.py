@@ -18,7 +18,6 @@ import cgi
 from io import BytesIO
 import cgi
 import logging
-import signal
 from core.confparser import Confparser
 from core.compyle import compyle
 
