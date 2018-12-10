@@ -1,5 +1,7 @@
 class Confparser():
 
+    # Simple config file parser [L.Conti]
+
     def __init__(self, filepath):
         raw_conf = open(filepath, 'r').read().replace('\r','')
         self.conf = []
@@ -24,13 +26,3 @@ class Confparser():
     
     def dump(self):
         return self.conf
-
-if __name__ == '__main__':
-
-    try:
-        conf = conf('confparser.conf')
-        for v in conf.dump():
-            print(v)
-        
-    except Exception as e:
-        print(str(e))

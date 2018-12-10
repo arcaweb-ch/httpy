@@ -4,7 +4,6 @@ import socketserver
 from socket import *
 from _thread import *
 import threading
-import select
 import time
 import json
 import re
@@ -19,18 +18,12 @@ import cgi
 from io import BytesIO
 import cgi
 import logging
+from core.confparser import Confparser
+from core.compyle import compyle
 
 
 def millitime():
     return int(round(time() * 1000))
-
-
-def check_versions():
-    print("[hello_world.py] CEF Python {ver}".format(ver=cef.__version__))
-    print("[hello_world.py] Python {ver} {arch}".format(
-          ver=platform.python_version(), arch=platform.architecture()[0]))
-    assert cef.__version__ >= "55.3", "CEF Python v55.3+ required to run this"
-
 
 def getcurrentpath():
 
@@ -49,7 +42,6 @@ def get_header(env, param):
 
 
 def secure_check(clientsock, env):
-    global ipwait
 
     err = 0
 
@@ -180,22 +172,24 @@ def process_uri(clientsock, request_headers, request_body, env):
     request_time = strftime("%Y-%m-%d %H:%M:%S")
 
     request_uri_parts = urlsplit(request_uri)._asdict()
-    """http://user:pass@NetLoc:80/sub/path.html;parameters?query=argument#fragment
-    scheme  : http
-    netloc  : user:pass@NetLoc:80
-    path    : /sub/path.html
-    params  : parameters
-    query   : query=argument
-    fragment: fragment
-    username: user
-    password: pass
-    hostname: netloc (netloc in lower case)
-    port    : 80"""
+
+    """
+        http://user:pass@NetLoc:80/sub/path.html;parameters?query=argument#fragment
+        scheme  : http
+        netloc  : user:pass@NetLoc:80
+        path    : /sub/path.html
+        params  : parameters
+        query   : query=argument
+        fragment: fragment
+        username: user
+        password: pass
+        hostname: netloc (netloc in lower case)
+        port    : 80
+    """
 
     env['request_uri'] = request_uri
     env['request_uri_parts'] = request_uri_parts
-    env['request_uri_dirname'] = os.path.dirname(
-        request_uri_parts['path']).rstrip('/').rstrip('\\')
+    env['request_uri_dirname'] = os.path.dirname(request_uri_parts['path']).rstrip('/').rstrip('\\')
     env['request_method'] = request_method
     env['request_protocol'] = request_protocol
     env['request_time'] = request_time
@@ -218,7 +212,6 @@ def process_uri(clientsock, request_headers, request_body, env):
                 BytesIO(bytes(request_body, 'utf-8')), pdict)
 
         elif ctype == 'application/x-www-form-urlencoded':
-            length = int(request_headers['Content-Length'])
             postvars = cgi.parse_qs(
                 BytesIO(bytes(request_body, 'utf-8')), keep_blank_values=1)
 
@@ -229,11 +222,10 @@ def process_uri(clientsock, request_headers, request_body, env):
             env['request_post_params'][str(v)] = values
 
     env['session'] = {}
-    env['document_root'] = conf.get('document_root').rstrip('/ ').rstrip('\\ ')
+    env['document_root'] = conf.get('document_root').replace('%SCRIPT_PATH%',getcurrentpath()).rstrip('/ ').rstrip('\\ ')
     env['tmp_path'] = conf.get('tmp_path').rstrip('/').rstrip('\\')
     env['session_path'] = conf.get('session_path').rstrip('/').rstrip('\\')
-    env['request_file_path'] = env['document_root'] + \
-        '/' + request_uri_parts['path'].lstrip('/')
+    env['request_file_path'] = env['document_root'] + '/' + request_uri_parts['path'].lstrip('/')
     env['request_file_dir'] = ''
     env['request_file_name'] = ''
 
@@ -254,14 +246,13 @@ def process_uri(clientsock, request_headers, request_body, env):
         return http_error(clientsock, 404)
 
     env['request_file_dir_name'] = env['request_file_dir'].split("/")[-1]
-    env['request_file_ext'] = env['request_file_name'].rpartition('.')[
-        2].lower()
+    env['request_file_ext'] = env['request_file_name'].rpartition('.')[2].lower()
 
     if not secure_check(clientsock, env):
         return http_error(clientsock, 400)
-
-    log = env['remote_addr'] + ' - [' + env['request_time'] + '] "' + \
-        env['request_method'] + ' ' + env['request_uri'] + '"'
+        
+    # Show requests in real time
+    # print(env['remote_addr'] + ' - [' + env['request_time'] + '] "' +  env['request_method'] + ' ' + env['request_uri'] + '"')
 
     mime_type = conf.get('mime_type_default').strip('"')
     if '.' in env['request_file_name']:
@@ -281,12 +272,9 @@ def process_uri(clientsock, request_headers, request_body, env):
         return http_error(clientsock, 404)
 
     custom_headers = {}
-    httperror = 0
+
     if env['request_file_ext'] in ('py'):
         data, custom_headers, httperror = compyle(data, env)
-
-    # if httperror is not 0:
-    #    return http_error(clientsock, http_error)
 
     # PACK HEDERS
 
@@ -329,33 +317,15 @@ def process_uri(clientsock, request_headers, request_body, env):
 
     clientsock.close()
 
-
-def awServer(addr, bufsize):
-
-    socket_timeout = int(conf.get('socket_timeout'))
-
-    server = ThreadedTCPServer((HOST, PORT), ThreadedTCPRequestHandler)
-    ip, port = server.server_address
-
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.daemon = True
-    server_thread.start()
-    print("Server loop running in thread:", server_thread.name)
-
-
 class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
 
-        cur_thread = threading.current_thread()
-
-        starttime = millitime()
         data = b''
         content_length = 0
         body_bytes_received = 0
         request_headers = {}
         request_body = b''
-        request_string = ''
         bufsize = 4096
         bytesleft = bufsize
         error = 0
@@ -424,7 +394,6 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 
             except ConnectionResetError:
                 error = -1
-                self.close_connection(self.request)
 
         if error > 0:
             http_error(self.request, error)
@@ -440,23 +409,19 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     pass
 
-
 if __name__ == '__main__':
 
-    # sys.path.append(getcurrentpath())
     # https://docs.python.org/3.5/library/socketserver.html#asynchronous-mixins
 
     print("[-- Simple python web server written by L.Conti (arcaweb) --]")
-
-    from core.confparser import Confparser
-    from core.compyle import compyle
 
     conf_path = getcurrentpath() + '/conf/aws.conf'
     if len(sys.argv) > 1:
         conf_path = sys.argv[1]
 
     conf = Confparser(conf_path)
-    sys.path.append(conf.get('document_root'))
+    web_root = conf.get('document_root').replace('%SCRIPT_PATH%',getcurrentpath())
+    sys.path.append(web_root)
 
     host = conf.get('server_hostname')
     port = int(conf.get('server_port'))
@@ -470,4 +435,18 @@ if __name__ == '__main__':
     server_thread = threading.Thread(target=server.serve_forever)
     server_thread.daemon = False
     server_thread.start()
-    print("    Server started @ address", host, 'on port', port)
+
+    print("    Server started @ address", ip, 'on port', port)
+    print("    Default root:", web_root)
+    print()
+    print("    Press CTRL+C to exit")
+
+    while True:
+        try:
+            sleep(1)
+        except KeyboardInterrupt:
+            print()
+            print('    Shutdown..')
+            server.shutdown()
+            server.server_close()
+            break
