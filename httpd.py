@@ -18,6 +18,7 @@ import cgi
 from io import BytesIO
 import cgi
 import logging
+import signal
 from core.confparser import Confparser
 from core.compyle import compyle
 
@@ -251,8 +252,7 @@ def process_uri(clientsock, request_headers, request_body, env):
     if not secure_check(clientsock, env):
         return http_error(clientsock, 400)
         
-    # Show requests in real time
-    # print(env['remote_addr'] + ' - [' + env['request_time'] + '] "' +  env['request_method'] + ' ' + env['request_uri'] + '"')
+    logging.info(env['remote_addr'] + ' - ' + env['request_method'] + ' ' + env['request_uri'] + '"')
 
     mime_type = conf.get('mime_type_default').strip('"')
     if '.' in env['request_file_name']:
@@ -327,14 +327,19 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
         request_headers = {}
         request_body = b''
         bufsize = 4096
+        
+        # To be fixed
+        # socket_timeout = int(conf.get('socket_timeout'))
+        # self.request.settimeout(socket_timeout)
+        
         bytesleft = bufsize
         error = 0
         env = {}
+
         while True:
             try:
                 buf = self.request.recv(bytesleft)
                 if buf == b'':
-                    logging.debug('Socket connection broken')
                     error = -1
                     break
 
@@ -373,10 +378,8 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                                 break
                             request_body = b'\r\n\r\n'.join(parts)
                             body_bytes_received = len(request_body)
-                            #logging.debug('Received: ', len(buf), 'bytes |', body_bytes_received, '/', content_length)
                             if body_bytes_received >= content_length:
                                 break
-                            #print ('min', bytesleft, content_length-body_bytes_received)
                             bytesleft = min(
                                 bytesleft, content_length-body_bytes_received)
 
@@ -384,16 +387,15 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                     request_body += buf
                     body_bytes_received += len(buf)
 
-                    #logging.debug('Received: ', len(buf), 'bytes |', body_bytes_received, '/', content_length)
                     if body_bytes_received >= content_length:
-                        #logging.debug('Received: ', len(request_body), 'of', content_length, 'bytes')
                         break
-                    #print ('min', bytesleft, content_length-body_bytes_received)
                     bytesleft = min(bytesleft, content_length -
                                     body_bytes_received)
 
             except ConnectionResetError:
                 error = -1
+            except self.socket.timeout:
+                pass
 
         if error > 0:
             http_error(self.request, error)
@@ -409,6 +411,14 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     pass
 
+def signal_handler(sig, frame):
+    print()
+    print('    Shutdown..')
+    logging.info("Shutdown..")
+    server.shutdown()
+    server.server_close()
+    sys.exit(0)
+
 if __name__ == '__main__':
 
     # https://docs.python.org/3.5/library/socketserver.html#asynchronous-mixins
@@ -420,33 +430,49 @@ if __name__ == '__main__':
         conf_path = sys.argv[1]
 
     conf = Confparser(conf_path)
-    web_root = conf.get('document_root').replace('%SCRIPT_PATH%',getcurrentpath())
-    sys.path.append(web_root)
 
+    # LOGGING
+    today = datetime.today()
+    log_path = today.strftime(conf.get('log_path').replace('%SCRIPT_PATH%',getcurrentpath()))
+    log_level = int(conf.get('log_level'))
+    logging.basicConfig(
+        filename=log_path,
+        filemode='a',
+        level=log_level,
+        format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S")
+    logging.info("Starting HTTPY Server")
+
+    document_root = conf.get('document_root').replace('%SCRIPT_PATH%',getcurrentpath())
+    sys.path.append(document_root)
+    
     host = conf.get('server_hostname')
     port = int(conf.get('server_port'))
-    bufsize = 4096
-    addr = (host, port)
+    server_daemon = True if conf.get('server_daemon') == 'true' else False
+    server_daemon = False # Daemon mode: to be fixed
 
-    socket_timeout = int(conf.get('socket_timeout'))
+    logging.debug("Hostname: "+host)
+    logging.debug("port: "+str(port))
+    logging.debug("Daemon: "+str(server_daemon))
+    logging.debug("Document root: "+document_root)
+    
+    try:
+        server = ThreadedTCPServer((host, port), ThreadedTCPRequestHandler)
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.daemon = server_daemon
+        server_thread.start()
 
-    server = ThreadedTCPServer((host, port), ThreadedTCPRequestHandler)
-    ip, port = server.server_address
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.daemon = False
-    server_thread.start()
+        signal.signal(signal.SIGINT, signal_handler)
 
-    print("    Server started @ address", ip, 'on port', port)
-    print("    Default root:", web_root)
-    print()
-    print("    Press CTRL+C to exit")
-
-    while True:
-        try:
-            sleep(1)
-        except KeyboardInterrupt:
-            print()
-            print('    Shutdown..')
-            server.shutdown()
-            server.server_close()
-            break
+        print()
+        print("    Server running @ http://"+host+':'+str(port))
+        print("    Default root:", document_root)
+        print()
+        if not server_daemon:
+            print("    Press CTRL+C to quit")
+            signal.pause()
+    except Exception as e:
+        print('    We have a problem: '+str(e))
+        logging.critical(str(e))
+    
+        
