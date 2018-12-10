@@ -221,9 +221,11 @@ def process_uri(clientsock, request_headers, request_body, env):
             if not '[]' in str(v):
                 values = values[0]
             env['request_post_params'][str(v)] = values
+    
+    document_root = conf.get('document_root').replace('%SCRIPT_PATH%',env['script_path'])
 
     env['session'] = {}
-    env['document_root'] = conf.get('document_root').replace('%SCRIPT_PATH%',getcurrentpath()).rstrip('/ ').rstrip('\\ ')
+    env['document_root'] = document_root.rstrip('/ ').rstrip('\\ ')
     env['tmp_path'] = conf.get('tmp_path').rstrip('/').rstrip('\\')
     env['session_path'] = conf.get('session_path').rstrip('/').rstrip('\\')
     env['request_file_path'] = env['document_root'] + '/' + request_uri_parts['path'].lstrip('/')
@@ -327,14 +329,13 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
         request_headers = {}
         request_body = b''
         bufsize = 4096
-        
+
         # To be fixed
         # socket_timeout = int(conf.get('socket_timeout'))
         # self.request.settimeout(socket_timeout)
         
         bytesleft = bufsize
         error = 0
-        env = {}
 
         while True:
             try:
@@ -405,19 +406,18 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                     http_options(self.request, request_headers)
                 else:
                     process_uri(self.request, request_headers,
-                                request_body.decode('utf-8'), env)
+                                request_body.decode('utf-8'), self.server.env)
 
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     pass
 
-def signal_handler(sig, frame):
+def shutdown():
     print()
     print('    Shutdown..')
     logging.info("Shutdown..")
     server.shutdown()
     server.server_close()
-    sys.exit(0)
 
 if __name__ == '__main__':
 
@@ -458,19 +458,24 @@ if __name__ == '__main__':
     
     try:
         server = ThreadedTCPServer((host, port), ThreadedTCPRequestHandler)
+        server.env = {'script_path':getcurrentpath()}
         server_thread = threading.Thread(target=server.serve_forever)
         server_thread.daemon = server_daemon
         server_thread.start()
-
-        signal.signal(signal.SIGINT, signal_handler)
 
         print()
         print("    Server running @ http://"+host+':'+str(port))
         print("    Default root:", document_root)
         print()
         if not server_daemon:
-            print("    Press CTRL+C to quit")
-            signal.pause()
+            print("    Press CTRL+C or CTRL+BREAK to quit")
+        while True:
+            try:
+                sleep(1)
+            except KeyboardInterrupt:
+                shutdown()  
+                break
+
     except Exception as e:
         print('    We have a problem: '+str(e))
         logging.critical(str(e))
